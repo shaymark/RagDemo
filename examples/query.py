@@ -1,43 +1,22 @@
 """
-query.py — Query the existing RAG database (no rebuilding)
-===========================================================
-Run this after rag_demo.py has already built the ChromaDB collection.
+query.py — Interactive query mode (example script)
+====================================================
+Query the existing RAG database without rebuilding it.
+Core logic lives in rag_engine.py.
+
+Run from the project root:
+    source venv/bin/activate
+    python3 examples/query.py
 """
 
 import os
+import sys
 import textwrap
-import chromadb
-from chromadb.utils import embedding_functions
 
+# Allow imports from the project root
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-def load_collection() -> chromadb.Collection:
-    client = chromadb.PersistentClient(path="./chroma_db")
-    ef = embedding_functions.DefaultEmbeddingFunction()
-    existing = [c.name for c in client.list_collections()]
-
-    if "aquabot_docs" not in existing:
-        print("ERROR: No collection found. Run rag_demo.py first to build it.")
-        exit(1)
-
-    collection = client.get_collection(name="aquabot_docs", embedding_function=ef)
-    print(f"Loaded collection: {collection.count()} vectors ready.\n")
-    return collection
-
-
-def retrieve(collection: chromadb.Collection, query: str, top_k: int = 3) -> list[dict]:
-    results = collection.query(
-        query_texts=[query],
-        n_results=top_k,
-        include=["documents", "metadatas", "distances"],
-    )
-    return [
-        {
-            "text": results["documents"][0][i],
-            "source": results["metadatas"][0][i]["source"],
-            "similarity": 1 - results["distances"][0][i],
-        }
-        for i in range(len(results["ids"][0]))
-    ]
+from rag_engine import load_collection, retrieve
 
 
 def generate_answer(query: str, chunks: list[dict]) -> str:
@@ -76,7 +55,13 @@ def main():
     print("  AquaBot RAG — Query Mode")
     print("=" * 60)
 
-    collection = load_collection()
+    try:
+        collection = load_collection()
+    except RuntimeError as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
+
+    print(f"Loaded collection: {collection.count()} vectors ready.\n")
 
     while True:
         query = input("Ask a question (or 'exit'): ").strip()

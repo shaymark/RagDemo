@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "rag-admin",
+      "runtimeExecutable": "/Users/shaymark/.pyenv/versions/3.13.5/bin/python3",
+      "runtimeArgs": ["-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"],
+      "port": 8000
+    }
+  ]
+}
