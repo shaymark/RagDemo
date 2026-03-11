@@ -32,6 +32,7 @@ STATIC_DIR = BASE_DIR / "static"
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful AquaBot support assistant. "
     "Answer using ONLY the context below.\n"
+    "if the user will ask question in different language please answer to him in his language.\n"
     'If the answer is not in the context, say "I don\'t have that information."'
 )
 
