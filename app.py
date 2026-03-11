@@ -99,6 +99,10 @@ class ChatRequest(BaseModel):
     top_k: int | None = None
 
 
+class DocumentUpdate(BaseModel):
+    content: str
+
+
 # ── Settings endpoints ────────────────────────────────────────────────────────
 @app.get("/api/settings")
 def get_settings():
@@ -155,6 +159,43 @@ def delete_document(filename: str):
     target.unlink()
     chunks_total = reindex()
     return {"success": True, "deleted": safe_name, "chunks_total": chunks_total}
+
+
+@app.get("/api/documents/{filename}/content")
+def get_document_content(filename: str):
+    safe_name = Path(filename).name
+    if not safe_name.endswith(".txt"):
+        raise HTTPException(status_code=400, detail="Only .txt files are allowed")
+    target = DOCS_DIR / safe_name
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return {"filename": safe_name, "content": target.read_text()}
+
+
+@app.put("/api/documents/{filename}")
+def update_document(filename: str, body: DocumentUpdate):
+    safe_name = Path(filename).name
+    if not safe_name.endswith(".txt"):
+        raise HTTPException(status_code=400, detail="Only .txt files are allowed")
+    target = DOCS_DIR / safe_name
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    target.write_text(body.content)
+    chunks_total = reindex()
+    return {"success": True, "filename": safe_name, "chunks_total": chunks_total}
+
+
+@app.get("/api/documents/{filename}")
+def download_document(filename: str):
+    from fastapi.responses import FileResponse as FR
+    safe_name = Path(filename).name
+    if not safe_name.endswith(".txt"):
+        raise HTTPException(status_code=400, detail="Only .txt files are allowed")
+    target = DOCS_DIR / safe_name
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FR(str(target), media_type="text/plain",
+              headers={"Content-Disposition": f"attachment; filename={safe_name}"})
 
 
 # ── Chat endpoint (also the external REST API) ────────────────────────────────
