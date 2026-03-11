@@ -37,15 +37,21 @@ DEFAULT_SYSTEM_PROMPT = (
 
 # ── Settings helpers ──────────────────────────────────────────────────────────
 def load_settings() -> dict:
+    # Seed api_key from environment variable if available
+    env_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not SETTINGS_FILE.exists():
         defaults = {
-            "api_key": "",
+            "api_key": env_key,
             "system_prompt": DEFAULT_SYSTEM_PROMPT,
             "top_k": 3,
         }
         SETTINGS_FILE.write_text(json.dumps(defaults, indent=2))
         return defaults
-    return json.loads(SETTINGS_FILE.read_text())
+    data = json.loads(SETTINGS_FILE.read_text())
+    # If settings file has no key but env var is set, use the env var
+    if not data.get("api_key") and env_key:
+        data["api_key"] = env_key
+    return data
 
 
 def save_settings(data: dict):
