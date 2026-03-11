@@ -1,0 +1,30 @@
+AquaBot Pricing Guide
+======================
+
+Hardware (one-time purchase, free shipping over $75):
+- Sensor Hub: $89
+- Smart Feeder: $49
+- Sensor Hub + Smart Feeder Bundle: $119 (save $19)
+- Replacement pH probe: $19
+- Replacement ammonia probe: $19
+- AutoDose (pre-order): $129
+
+Software subscriptions:
+- Free tier: $0 forever (included with hardware purchase)
+- Pro Monthly: $9.99/month
+- Pro Annual: $79/year (save ~34% vs monthly)
+- Pro Lifetime: $199 one-time (no recurring fees ever)
+
+Business/Professional Plans:
+- Aquarium Store Plan: $29/month — covers up to 20 tanks, priority support, bulk alert management
+- Hatchery Plan: $79/month — unlimited tanks, API access, custom alerts, dedicated account manager
+- Enterprise: Contact sales for custom pricing at sales@aquabot.io
+
+Refund policy:
+- Hardware: 30-day money-back guarantee if defective or unsatisfied
+- Subscriptions: Cancel anytime; no refund for partial billing period
+
+Student discount: 20% off Pro Annual with a valid .edu email (use code STUDENT20 at checkout)
+Non-profit aquariums: 50% off any plan, contact hello@aquabot.io with your 501(c)(3) documentation
+
+All prices are in USD. Tax calculated at checkout.

@@ -1,0 +1,24 @@
+AquaBot Company Overview
+========================
+
+AquaBot was founded in 2021 by marine biologist Dr. Sofia Chen and software engineer Marcus Rivera.
+The company is headquartered in San Diego, California, with a remote team of 45 employees.
+
+AquaBot's mission is to make aquarium keeping effortless through intelligent automation and AI-powered
+water quality monitoring. We believe every fish deserves a healthy home.
+
+Our platform connects to smart sensors placed in your aquarium and uses machine learning to detect
+problems before they harm your fish. The system can automatically adjust temperature, lighting,
+feeding schedules, and alert owners to dangerous pH or ammonia spikes.
+
+AquaBot has served over 50,000 aquarium hobbyists and 300 professional aquariums since launch.
+We won the 2023 PetTech Innovation Award and were featured in Wired magazine.
+
+Core values:
+- Fish First: every decision prioritizes animal welfare
+- Simplicity: powerful tech that anyone can use
+- Transparency: open data, no hidden fees
+- Community: we learn from our users
+
+Contact: hello@aquabot.io
+Press: press@aquabot.io

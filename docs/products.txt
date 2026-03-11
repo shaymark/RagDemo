@@ -1,0 +1,40 @@
+AquaBot Products
+================
+
+1. AquaBot Sensor Hub (Hardware)
+---------------------------------
+The Sensor Hub is a waterproof device that attaches to the inside of any aquarium.
+It measures: temperature, pH, ammonia (NH3), nitrite (NO2), nitrate (NO3), dissolved oxygen,
+and water hardness (GH/KH). Readings are sent every 60 seconds to the AquaBot cloud.
+Compatible with freshwater and saltwater aquariums from 5 to 500 gallons.
+Battery life: 6 months. Charges via USB-C.
+Price: $89 one-time purchase.
+
+2. AquaBot Smart Feeder (Hardware)
+------------------------------------
+An automatic feeder that connects to the AquaBot app.
+Supports pellets, flakes, and freeze-dried foods. Holds up to 200ml of food.
+Programmable feeding schedules: up to 8 feedings per day.
+Portion control: fine, medium, large. Vacation mode dispenses minimal food when you're away.
+Price: $49 one-time purchase.
+
+3. AquaBot App (Software - Free)
+----------------------------------
+Available on iOS and Android. The app is free forever with any hardware purchase.
+Features: real-time dashboard, historical charts (30 days), push alerts, feeding schedules,
+water change reminders, fish health diary, community forum access.
+Works offline with cached data.
+
+4. AquaBot Pro Subscription (Software)
+----------------------------------------
+$9.99/month or $79/year.
+Adds: AI anomaly detection with early warnings (up to 48 hours before a crash),
+unlimited data history, automated water change scheduling, API access for custom integrations,
+premium support (response within 2 hours), and up to 5 aquarium profiles.
+Cancel anytime.
+
+5. AquaBot AutoDose (Hardware - Coming Soon Q3 2026)
+------------------------------------------------------
+An automatic dosing pump that adds fertilizer, calcium, or other supplements on a schedule.
+Controlled directly from the AquaBot app. Supports up to 4 liquid reservoirs.
+Pre-order price: $129.

@@ -1,0 +1,43 @@
+AquaBot Frequently Asked Questions
+====================================
+
+Q: Does AquaBot work with saltwater (reef) aquariums?
+A: Yes! The Sensor Hub supports both freshwater and saltwater/reef aquariums. The salinity
+measurement is available in saltwater mode. Reef-specific parameters like calcium and alkalinity
+will be supported via the AutoDose module launching Q3 2026.
+
+Q: My sensor is showing an ammonia spike. What should I do?
+A: Do a 25-30% water change immediately using dechlorinated water at the same temperature.
+Reduce feeding for the next 48 hours. Check if any fish have died and remove them quickly.
+Add beneficial bacteria (e.g., Seachem Stability). If the spike persists after 24 hours,
+contact our support team through the app.
+
+Q: How do I connect the Sensor Hub to Wi-Fi?
+A: Open the AquaBot app, tap "Add Device", hold the Sensor Hub button for 3 seconds until
+it blinks blue, then follow the in-app instructions. It connects to 2.4GHz Wi-Fi networks.
+5GHz networks are not supported. Make sure your router allows new device connections.
+
+Q: Can I use AquaBot without the Pro subscription?
+A: Yes. The free tier includes real-time monitoring, 30-day data history, push notifications
+for critical alerts, and the smart feeder control. Pro adds predictive AI alerts, unlimited
+history, and multi-tank management. Most hobbyists are happy with the free tier.
+
+Q: How accurate are the sensors?
+A: pH accuracy is ±0.1 units. Temperature accuracy is ±0.2°C. Ammonia accuracy is ±0.05 ppm.
+We recommend calibrating the pH sensor every 3 months using the included calibration solution.
+Replacement sensor probes are $19 each and last approximately 12-18 months.
+
+Q: What happens if my internet goes down?
+A: The Sensor Hub stores up to 7 days of readings locally. Once connectivity is restored,
+it syncs all stored data. The app shows cached data offline but real-time alerts require
+an internet connection.
+
+Q: Can I share my aquarium data with my vet or aquarium store?
+A: Yes. Go to Settings > Data Sharing and generate a shareable link valid for 7 or 30 days.
+The link shows a read-only dashboard with all your recent water parameters. No login required
+for the recipient.
+
+Q: Is my data private?
+A: Your water parameter data is stored encrypted on AWS servers in the US. We do not sell
+personal data to third parties. Anonymized aggregate data may be used to improve our AI models.
+You can export or delete all your data at any time from Settings > Account > Data Management.
