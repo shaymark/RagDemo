@@ -126,16 +126,16 @@
 <header>
   <div class="logo">Aqua<span>Bot</span> RAG</div>
   <nav>
-    <button class="active" onclick="switchTab('settings', this)">⚙️ Settings</button>
+    <button onclick="switchTab('settings', this)">⚙️ Settings</button>
     <button onclick="switchTab('documents', this)">📄 Documents</button>
-    <button onclick="switchTab('chat', this)">💬 Chat</button>
+    <button class="active" onclick="switchTab('chat', this)">💬 Chat</button>
   </nav>
 </header>
 
 <main>
 
   <!-- ── SETTINGS TAB ── -->
-  <div id="tab-settings" class="tab-panel active">
+  <div id="tab-settings" class="tab-panel">
     <div class="card">
       <h2>API Configuration</h2>
       <div class="field">
@@ -179,7 +179,7 @@
   </div>
 
   <!-- ── CHAT TAB ── -->
-  <div id="tab-chat" class="tab-panel">
+  <div id="tab-chat" class="tab-panel active">
     <div class="chat-warn" id="chat-warn">
       ⚠️ API key not set. <a onclick="switchTabByName('settings')">Go to Settings</a> to configure it.
     </div>
@@ -477,7 +477,7 @@
   }
 
   // ── Init ─────────────────────────────────────────────────────────────────
-  loadSettings();
+  checkApiKey();
 </script>
 </body>
 </html>
