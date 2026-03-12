@@ -7,3 +7,9 @@ services:
     envVars:
       - key: ANTHROPIC_API_KEY
         sync: false   # Set this in the Render dashboard — never commit your API key
+      - key: SESSION_SECRET_KEY
+        sync: false   # Random secret for signing session cookies
+      - key: ADMIN_USERNAME
+        sync: false   # Admin login username (default: admin)
+      - key: ADMIN_PASSWORD
+        sync: false   # Admin login password (default: admin — CHANGE THIS)

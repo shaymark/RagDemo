@@ -8,17 +8,20 @@ Run:
     uvicorn app:app --reload --host 0.0.0.0 --port 8000
 """
 
+import hashlib
 import json
 import os
+import secrets
 from pathlib import Path
 
 import anthropic
 import chromadb
 from chromadb.utils import embedding_functions
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, File
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
 
 from rag_engine import load_documents, prepare_chunks, build_vector_store, load_collection, retrieve
 
@@ -36,6 +39,7 @@ DEFAULT_SYSTEM_PROMPT = (
     'If the answer is not in the context, say "I don\'t have that information."'
 )
 
+
 # ── Settings helpers ──────────────────────────────────────────────────────────
 def load_settings() -> dict:
     # Seed api_key from environment variable if available
@@ -45,6 +49,7 @@ def load_settings() -> dict:
             "api_key": env_key,
             "system_prompt": DEFAULT_SYSTEM_PROMPT,
             "top_k": 3,
+            "session_secret": secrets.token_hex(32),
         }
         SETTINGS_FILE.write_text(json.dumps(defaults, indent=2))
         return defaults
@@ -52,11 +57,33 @@ def load_settings() -> dict:
     # If settings file has no key but env var is set, use the env var
     if not data.get("api_key") and env_key:
         data["api_key"] = env_key
+    # Backfill session_secret for existing settings files
+    if not data.get("session_secret"):
+        data["session_secret"] = secrets.token_hex(32)
+        SETTINGS_FILE.write_text(json.dumps(data, indent=2))
     return data
 
 
 def save_settings(data: dict):
-    SETTINGS_FILE.write_text(json.dumps(data, indent=2))
+    # Preserve fields not managed by the settings form (e.g. session_secret)
+    current = json.loads(SETTINGS_FILE.read_text()) if SETTINGS_FILE.exists() else {}
+    current.update(data)
+    SETTINGS_FILE.write_text(json.dumps(current, indent=2))
+
+
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+def _hash_password(p: str) -> str:
+    return hashlib.sha256(p.encode()).hexdigest()
+
+
+# Resolve session secret: env var > settings.json > freshly generated
+_bootstrap = load_settings()
+SESSION_SECRET = os.environ.get(
+    "SESSION_SECRET_KEY",
+    _bootstrap.get("session_secret") or secrets.token_hex(32),
+)
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
+_ADMIN_PW_HASH = _hash_password(os.environ.get("ADMIN_PASSWORD", "admin"))
 
 
 # ── Re-indexing helper ────────────────────────────────────────────────────────
@@ -70,6 +97,20 @@ def reindex() -> int:
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(title="AquaBot RAG API", version="1.0.0")
+
+IS_PROD = os.environ.get("RENDER", "").lower() == "true"
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET,
+    https_only=IS_PROD,
+    same_site="lax",
+)
+
+
+# ── Auth dependency ───────────────────────────────────────────────────────────
+def require_auth(request: Request):
+    if not request.session.get("authenticated"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
 
 @app.on_event("startup")
@@ -85,12 +126,24 @@ def startup():
         print("Index ready.")
 
 
-# Serve static files and the root HTML page
+# ── Static files + page routes ────────────────────────────────────────────────
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
-@app.get("/", response_class=FileResponse)
+@app.get("/")
 def root():
+    return FileResponse(str(STATIC_DIR / "chat.html"))
+
+
+@app.get("/login")
+def login_page():
+    return FileResponse(str(STATIC_DIR / "login.html"))
+
+
+@app.get("/admin")
+def admin_page(request: Request):
+    if not request.session.get("authenticated"):
+        return RedirectResponse(url="/login", status_code=302)
     return FileResponse(str(STATIC_DIR / "index.html"))
 
 
@@ -110,9 +163,39 @@ class DocumentUpdate(BaseModel):
     content: str
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+# ── Auth endpoints ────────────────────────────────────────────────────────────
+@app.post("/api/login")
+def api_login(body: LoginRequest, request: Request):
+    username_ok = secrets.compare_digest(body.username, ADMIN_USERNAME)
+    password_ok = secrets.compare_digest(
+        _hash_password(body.password), _ADMIN_PW_HASH
+    )
+    if username_ok and password_ok:
+        request.session["authenticated"] = True
+        request.session["username"] = body.username
+        return {"success": True}
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+
+@app.post("/api/logout")
+def api_logout(request: Request):
+    request.session.clear()
+    return {"success": True}
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request):
+    return {"authenticated": bool(request.session.get("authenticated"))}
+
+
 # ── Settings endpoints ────────────────────────────────────────────────────────
 @app.get("/api/settings")
-def get_settings():
+def get_settings(_: None = Depends(require_auth)):
     s = load_settings()
     return {
         "api_key": "****" if s.get("api_key") else "",
@@ -122,7 +205,7 @@ def get_settings():
 
 
 @app.post("/api/settings")
-def post_settings(body: SettingsUpdate):
+def post_settings(body: SettingsUpdate, _: None = Depends(require_auth)):
     current = load_settings()
     # If user sent back the masked value, keep the existing key
     api_key = current["api_key"] if body.api_key == "****" else body.api_key
@@ -136,7 +219,7 @@ def post_settings(body: SettingsUpdate):
 
 # ── Documents endpoints ───────────────────────────────────────────────────────
 @app.get("/api/documents")
-def list_documents():
+def list_documents(_: None = Depends(require_auth)):
     docs = []
     for f in sorted(DOCS_DIR.iterdir()):
         if f.suffix == ".txt" and f.is_file():
@@ -145,7 +228,9 @@ def list_documents():
 
 
 @app.post("/api/documents/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(
+    file: UploadFile = File(...), _: None = Depends(require_auth)
+):
     safe_name = Path(file.filename).name
     if not safe_name.endswith(".txt"):
         raise HTTPException(status_code=400, detail="Only .txt files are allowed")
@@ -156,7 +241,7 @@ async def upload_document(file: UploadFile = File(...)):
 
 
 @app.delete("/api/documents/{filename}")
-def delete_document(filename: str):
+def delete_document(filename: str, _: None = Depends(require_auth)):
     safe_name = Path(filename).name
     if not safe_name.endswith(".txt"):
         raise HTTPException(status_code=400, detail="Only .txt files are allowed")
@@ -169,7 +254,7 @@ def delete_document(filename: str):
 
 
 @app.get("/api/documents/{filename}/content")
-def get_document_content(filename: str):
+def get_document_content(filename: str, _: None = Depends(require_auth)):
     safe_name = Path(filename).name
     if not safe_name.endswith(".txt"):
         raise HTTPException(status_code=400, detail="Only .txt files are allowed")
@@ -180,7 +265,9 @@ def get_document_content(filename: str):
 
 
 @app.put("/api/documents/{filename}")
-def update_document(filename: str, body: DocumentUpdate):
+def update_document(
+    filename: str, body: DocumentUpdate, _: None = Depends(require_auth)
+):
     safe_name = Path(filename).name
     if not safe_name.endswith(".txt"):
         raise HTTPException(status_code=400, detail="Only .txt files are allowed")
@@ -193,19 +280,21 @@ def update_document(filename: str, body: DocumentUpdate):
 
 
 @app.get("/api/documents/{filename}")
-def download_document(filename: str):
-    from fastapi.responses import FileResponse as FR
+def download_document(filename: str, _: None = Depends(require_auth)):
     safe_name = Path(filename).name
     if not safe_name.endswith(".txt"):
         raise HTTPException(status_code=400, detail="Only .txt files are allowed")
     target = DOCS_DIR / safe_name
     if not target.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    return FR(str(target), media_type="text/plain",
-              headers={"Content-Disposition": f"attachment; filename={safe_name}"})
+    return FileResponse(
+        str(target),
+        media_type="text/plain",
+        headers={"Content-Disposition": f"attachment; filename={safe_name}"},
+    )
 
 
-# ── Chat endpoint (also the external REST API) ────────────────────────────────
+# ── Chat endpoint (public — no auth required) ─────────────────────────────────
 @app.post("/api/chat")
 def chat(req: ChatRequest):
     settings = load_settings()
@@ -249,7 +338,7 @@ def chat(req: ChatRequest):
     }
 
 
-# ── Health endpoint ───────────────────────────────────────────────────────────
+# ── Health endpoint (public) ───────────────────────────────────────────────────
 @app.get("/api/health")
 def health():
     try:
