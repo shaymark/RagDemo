@@ -19,19 +19,19 @@ import time
 from pathlib import Path
 
 from pinecone import Pinecone, ServerlessSpec
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 
 INDEX_NAME = os.environ.get("PINECONE_INDEX_NAME", "aquabot-rag")
 DIMENSION  = 384      # all-MiniLM-L6-v2 output size
 METRIC     = "cosine"
 
-_embedder: SentenceTransformer | None = None  # lazy-loaded singleton
+_embedder: TextEmbedding | None = None  # lazy-loaded singleton
 
 
-def _get_embedder() -> SentenceTransformer:
+def _get_embedder() -> TextEmbedding:
     global _embedder
     if _embedder is None:
-        _embedder = SentenceTransformer("all-MiniLM-L6-v2")
+        _embedder = TextEmbedding("sentence-transformers/all-MiniLM-L6-v2")
     return _embedder
 
 
@@ -148,11 +148,12 @@ def build_vector_store(
         pass  # 404 "Namespace not found" is expected on a brand-new empty index
 
     embedder = _get_embedder()
+    embeddings = list(embedder.embed(texts))   # batch embed all chunks at once
     vectors = []
-    for chunk_id, text, meta in zip(ids, texts, metadatas):
+    for chunk_id, text, meta, emb in zip(ids, texts, metadatas, embeddings):
         vectors.append({
             "id": chunk_id,
-            "values": embedder.encode(text).tolist(),
+            "values": emb.tolist(),
             "metadata": {**meta, "text": text},  # text stored here for retrieval
         })
 
@@ -181,11 +182,12 @@ def upsert_document(filename: str, text: str) -> int:
     )
 
     embedder = _get_embedder()
+    embeddings = list(embedder.embed(texts))   # batch embed
     vectors = []
-    for chunk_id, chunk_str, meta in zip(ids, texts, metadatas):
+    for chunk_id, chunk_str, meta, emb in zip(ids, texts, metadatas, embeddings):
         vectors.append({
             "id": chunk_id,
-            "values": embedder.encode(chunk_str).tolist(),
+            "values": emb.tolist(),
             "metadata": {**meta, "text": chunk_str},
         })
 
@@ -215,7 +217,7 @@ def retrieve(index, query: str, top_k: int = 3) -> list[dict]:
     similarity is the cosine score from Pinecone (higher = more relevant).
     """
     embedder = _get_embedder()
-    query_vector = embedder.encode(query).tolist()
+    query_vector = list(embedder.embed([query]))[0].tolist()
 
     results = index.query(vector=query_vector, top_k=top_k, include_metadata=True)
 

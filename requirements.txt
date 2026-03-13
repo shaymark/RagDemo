@@ -4,6 +4,6 @@ itsdangerous==2.2.0
 pinecone==6.0.2
 pydantic==2.12.5
 python-multipart==0.0.22
-sentence-transformers==3.4.1
+fastembed
 supabase==2.15.1
 uvicorn==0.41.0
