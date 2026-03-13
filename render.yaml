@@ -13,3 +13,13 @@ services:
         sync: false   # Admin login username (default: admin)
       - key: ADMIN_PASSWORD
         sync: false   # Admin login password (default: admin — CHANGE THIS)
+      - key: PINECONE_API_KEY
+        sync: false   # Required — get from console.pinecone.io
+      - key: PINECONE_INDEX_NAME
+        sync: false   # Optional — defaults to "aquabot-rag"
+      - key: SUPABASE_URL
+        sync: false   # Optional — enables cloud file persistence (e.g. https://xxx.supabase.co)
+      - key: SUPABASE_KEY
+        sync: false   # Optional — use service role key
+      - key: SUPABASE_BUCKET
+        sync: false   # Optional — defaults to "docs"

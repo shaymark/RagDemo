@@ -2,6 +2,7 @@
 app.py — RAG Web App (FastAPI)
 =================================
 Admin panel + REST API wrapping the existing RAG pipeline.
+Vector store: Pinecone (cloud). File storage: Supabase (cloud, optional).
 
 Run:
     source venv/bin/activate
@@ -15,21 +16,27 @@ import secrets
 from pathlib import Path
 
 import anthropic
-import chromadb
-from chromadb.utils import embedding_functions
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, File
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
+from supabase import create_client
 
-from rag_engine import load_documents, prepare_chunks, build_vector_store, load_collection, retrieve
+from rag_engine import (
+    load_documents,
+    prepare_chunks,
+    build_vector_store,
+    get_index,
+    retrieve,
+    upsert_document,
+    delete_document_vectors,
+)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
 SETTINGS_FILE = BASE_DIR / "settings.json"
 DOCS_DIR = BASE_DIR / "docs"
-CHROMA_DIR = BASE_DIR / "chroma_db"
 STATIC_DIR = BASE_DIR / "static"
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -86,13 +93,29 @@ ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 _ADMIN_PW_HASH = _hash_password(os.environ.get("ADMIN_PASSWORD", "admin"))
 
 
-# ── Re-indexing helper ────────────────────────────────────────────────────────
-def reindex() -> int:
-    """Rebuild ChromaDB collection from ./docs/. Returns total chunk count."""
-    documents = load_documents(str(DOCS_DIR))
-    ids, texts, metadatas = prepare_chunks(documents)
-    build_vector_store(ids, texts, metadatas)
-    return len(ids)
+# ── Supabase storage helper ───────────────────────────────────────────────────
+def _get_storage():
+    """
+    Returns a Supabase storage bucket client, or None if env vars are not set.
+    When None, file operations fall back to ./docs/ on local disk.
+    """
+    url = os.environ.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_KEY", "")
+    if not url or not key:
+        return None
+    bucket = os.environ.get("SUPABASE_BUCKET", "docs")
+    return create_client(url, key).storage.from_(bucket)
+
+
+def _sf_name(f) -> str:
+    """Get filename from a Supabase file object (handles both dict and object)."""
+    return f.name if hasattr(f, "name") else f["name"]
+
+
+def _sf_size(f) -> int:
+    """Get file size in bytes from a Supabase file object."""
+    meta = f.metadata if hasattr(f, "metadata") else f.get("metadata", {})
+    return (meta or {}).get("size", 0)
 
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
@@ -113,17 +136,67 @@ def require_auth(request: Request):
         raise HTTPException(status_code=401, detail="Not authenticated")
 
 
+# ── Startup ───────────────────────────────────────────────────────────────────
 @app.on_event("startup")
 def startup():
-    # Ensure settings.json exists
     load_settings()
-    # Build index if collection doesn't exist yet
-    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-    existing = [c.name for c in client.list_collections()]
-    if "aquabot_docs" not in existing:
-        print("No collection found — building index from ./docs/ ...")
-        reindex()
-        print("Index ready.")
+
+    pinecone_key = os.environ.get("PINECONE_API_KEY", "")
+    if not pinecone_key:
+        print("WARNING: PINECONE_API_KEY not set — skipping startup index check.")
+        return
+
+    try:
+        storage = _get_storage()
+
+        # Seed Supabase bucket from git sample files on first deploy
+        if storage:
+            remote_files = {_sf_name(f) for f in storage.list()}
+            if not remote_files:
+                print("Supabase bucket is empty — seeding from ./docs/ ...")
+                for f in sorted(DOCS_DIR.iterdir()):
+                    if f.suffix == ".txt":
+                        storage.upload(f.name, f.read_bytes(), {"upsert": "true"})
+                        print(f"  Seeded: {f.name}")
+
+        # Build Pinecone index if empty or missing
+        try:
+            index = get_index()
+            stats = index.describe_index_stats()
+            vector_count = stats.total_vector_count
+        except RuntimeError:
+            vector_count = 0
+
+        if vector_count == 0:
+            print("Pinecone index is empty — building ...")
+            _build_index_from_source(storage)
+            print("Index ready.")
+        else:
+            print(f"Pinecone index ready ({vector_count} vectors).")
+
+    except Exception as e:
+        print(f"WARNING: Startup index check failed: {e}")
+
+
+def _build_index_from_source(storage) -> None:
+    """Build (or rebuild) the full Pinecone index from Supabase or local disk."""
+    if storage:
+        files = [f for f in storage.list() if _sf_name(f).endswith(".txt")]
+        documents = []
+        for f in files:
+            name = _sf_name(f)
+            text = storage.download(name).decode("utf-8")
+            documents.append({
+                "id": Path(name).stem,
+                "text": text,
+                "source": name,
+            })
+    else:
+        documents = load_documents(str(DOCS_DIR))
+
+    if documents:
+        ids, texts, metadatas = prepare_chunks(documents)
+        build_vector_store(ids, texts, metadatas)
 
 
 # ── Static files + page routes ────────────────────────────────────────────────
@@ -220,10 +293,20 @@ def post_settings(body: SettingsUpdate, _: None = Depends(require_auth)):
 # ── Documents endpoints ───────────────────────────────────────────────────────
 @app.get("/api/documents")
 def list_documents(_: None = Depends(require_auth)):
-    docs = []
-    for f in sorted(DOCS_DIR.iterdir()):
-        if f.suffix == ".txt" and f.is_file():
-            docs.append({"name": f.name, "size": f.stat().st_size})
+    storage = _get_storage()
+    if storage:
+        docs = [
+            {"name": _sf_name(f), "size": _sf_size(f)}
+            for f in storage.list()
+            if _sf_name(f).endswith(".txt")
+        ]
+        docs.sort(key=lambda d: d["name"])
+    else:
+        docs = [
+            {"name": f.name, "size": f.stat().st_size}
+            for f in sorted(DOCS_DIR.iterdir())
+            if f.suffix == ".txt" and f.is_file()
+        ]
     return {"documents": docs}
 
 
@@ -234,10 +317,18 @@ async def upload_document(
     safe_name = Path(file.filename).name
     if not safe_name.endswith(".txt"):
         raise HTTPException(status_code=400, detail="Only .txt files are allowed")
-    dest = DOCS_DIR / safe_name
-    dest.write_bytes(await file.read())
-    chunks_total = reindex()
-    return {"success": True, "filename": safe_name, "chunks_total": chunks_total}
+
+    content_bytes = await file.read()
+    content_text = content_bytes.decode("utf-8")
+
+    storage = _get_storage()
+    if storage:
+        storage.upload(safe_name, content_bytes, {"upsert": "true"})
+    else:
+        (DOCS_DIR / safe_name).write_bytes(content_bytes)
+
+    chunks = upsert_document(safe_name, content_text)
+    return {"success": True, "filename": safe_name, "chunks_total": chunks}
 
 
 @app.delete("/api/documents/{filename}")
@@ -245,12 +336,18 @@ def delete_document(filename: str, _: None = Depends(require_auth)):
     safe_name = Path(filename).name
     if not safe_name.endswith(".txt"):
         raise HTTPException(status_code=400, detail="Only .txt files are allowed")
-    target = DOCS_DIR / safe_name
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    target.unlink()
-    chunks_total = reindex()
-    return {"success": True, "deleted": safe_name, "chunks_total": chunks_total}
+
+    storage = _get_storage()
+    if storage:
+        storage.remove([safe_name])
+    else:
+        target = DOCS_DIR / safe_name
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        target.unlink()
+
+    delete_document_vectors(safe_name)
+    return {"success": True, "deleted": safe_name}
 
 
 @app.get("/api/documents/{filename}/content")
@@ -258,10 +355,20 @@ def get_document_content(filename: str, _: None = Depends(require_auth)):
     safe_name = Path(filename).name
     if not safe_name.endswith(".txt"):
         raise HTTPException(status_code=400, detail="Only .txt files are allowed")
-    target = DOCS_DIR / safe_name
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    return {"filename": safe_name, "content": target.read_text()}
+
+    storage = _get_storage()
+    if storage:
+        try:
+            content = storage.download(safe_name).decode("utf-8")
+        except Exception:
+            raise HTTPException(status_code=404, detail="File not found")
+    else:
+        target = DOCS_DIR / safe_name
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        content = target.read_text()
+
+    return {"filename": safe_name, "content": content}
 
 
 @app.put("/api/documents/{filename}")
@@ -271,12 +378,18 @@ def update_document(
     safe_name = Path(filename).name
     if not safe_name.endswith(".txt"):
         raise HTTPException(status_code=400, detail="Only .txt files are allowed")
-    target = DOCS_DIR / safe_name
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    target.write_text(body.content)
-    chunks_total = reindex()
-    return {"success": True, "filename": safe_name, "chunks_total": chunks_total}
+
+    storage = _get_storage()
+    if storage:
+        storage.upload(safe_name, body.content.encode("utf-8"), {"upsert": "true"})
+    else:
+        target = DOCS_DIR / safe_name
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        target.write_text(body.content)
+
+    chunks = upsert_document(safe_name, body.content)
+    return {"success": True, "filename": safe_name, "chunks_total": chunks}
 
 
 @app.get("/api/documents/{filename}")
@@ -284,14 +397,27 @@ def download_document(filename: str, _: None = Depends(require_auth)):
     safe_name = Path(filename).name
     if not safe_name.endswith(".txt"):
         raise HTTPException(status_code=400, detail="Only .txt files are allowed")
-    target = DOCS_DIR / safe_name
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(
-        str(target),
-        media_type="text/plain",
-        headers={"Content-Disposition": f"attachment; filename={safe_name}"},
-    )
+
+    storage = _get_storage()
+    if storage:
+        try:
+            data = storage.download(safe_name)
+        except Exception:
+            raise HTTPException(status_code=404, detail="File not found")
+        return Response(
+            content=data,
+            media_type="text/plain",
+            headers={"Content-Disposition": f"attachment; filename={safe_name}"},
+        )
+    else:
+        target = DOCS_DIR / safe_name
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        return FileResponse(
+            str(target),
+            media_type="text/plain",
+            headers={"Content-Disposition": f"attachment; filename={safe_name}"},
+        )
 
 
 # ── Chat endpoint (public — no auth required) ─────────────────────────────────
@@ -305,11 +431,18 @@ def chat(req: ChatRequest):
             detail="API key not configured. Set it in Settings.",
         )
 
+    pinecone_key = os.environ.get("PINECONE_API_KEY", "")
+    if not pinecone_key:
+        raise HTTPException(
+            status_code=400,
+            detail="PINECONE_API_KEY not configured.",
+        )
+
     top_k = req.top_k if req.top_k is not None else settings.get("top_k", 3)
 
-    # Retrieve relevant chunks from vector store
-    collection = load_collection()
-    chunks = retrieve(collection, req.query, top_k=top_k)
+    # Retrieve relevant chunks from Pinecone
+    index = get_index()
+    chunks = retrieve(index, req.query, top_k=top_k)
 
     # Build prompt with configurable system prompt
     system_prompt = settings.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
@@ -342,18 +475,23 @@ def chat(req: ChatRequest):
 @app.get("/api/health")
 def health():
     try:
-        client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-        existing = [c.name for c in client.list_collections()]
-        collection_ready = "aquabot_docs" in existing
-        vector_count = 0
-        if collection_ready:
-            ef = embedding_functions.DefaultEmbeddingFunction()
-            col = client.get_collection("aquabot_docs", embedding_function=ef)
-            vector_count = col.count()
-        doc_count = len([f for f in DOCS_DIR.iterdir() if f.suffix == ".txt"])
+        pinecone_key = os.environ.get("PINECONE_API_KEY", "")
+        if not pinecone_key:
+            return {"status": "error", "detail": "PINECONE_API_KEY not set"}
+
+        index = get_index()
+        stats = index.describe_index_stats()
+        vector_count = stats.total_vector_count
+
+        storage = _get_storage()
+        if storage:
+            doc_count = sum(1 for f in storage.list() if _sf_name(f).endswith(".txt"))
+        else:
+            doc_count = len([f for f in DOCS_DIR.iterdir() if f.suffix == ".txt"])
+
         return {
             "status": "ok",
-            "collection_ready": collection_ready,
+            "collection_ready": vector_count > 0,
             "vector_count": vector_count,
             "doc_count": doc_count,
         }

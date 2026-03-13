@@ -1,24 +1,70 @@
 """
-rag_engine.py — Core RAG functions
-====================================
-This is the single source of truth for all RAG pipeline logic.
-Import from here in app.py and any other scripts.
+rag_engine.py — Core RAG functions (Pinecone backend)
+======================================================
+All RAG pipeline logic. Import from app.py and any other scripts.
 
 Functions:
-  load_documents     — load .txt files from a directory
-  chunk_text         — split text into overlapping chunks
-  prepare_chunks     — convert documents to ChromaDB format
-  build_vector_store — embed chunks and store in ChromaDB
-  load_collection    — load an existing ChromaDB collection
-  retrieve           — find top-k most relevant chunks for a query
+  load_documents         — load .txt files from a directory
+  chunk_text             — split text into overlapping chunks
+  prepare_chunks         — convert documents to (ids, texts, metadatas)
+  build_vector_store     — full rebuild: embed all chunks into Pinecone (startup only)
+  upsert_document        — incremental: add/replace one file's vectors
+  delete_document_vectors— incremental: remove one file's vectors
+  get_index              — return the Pinecone Index handle
+  retrieve               — find top-k most relevant chunks for a query
 """
 
 import os
-import chromadb
-from chromadb.utils import embedding_functions
+import time
+from pathlib import Path
 
-CHROMA_PATH = "./chroma_db"
-COLLECTION_NAME = "aquabot_docs"
+from pinecone import Pinecone, ServerlessSpec
+from sentence_transformers import SentenceTransformer
+
+INDEX_NAME = os.environ.get("PINECONE_INDEX_NAME", "aquabot-rag")
+DIMENSION  = 384      # all-MiniLM-L6-v2 output size
+METRIC     = "cosine"
+
+_embedder: SentenceTransformer | None = None  # lazy-loaded singleton
+
+
+def _get_embedder() -> SentenceTransformer:
+    global _embedder
+    if _embedder is None:
+        _embedder = SentenceTransformer("all-MiniLM-L6-v2")
+    return _embedder
+
+
+def _get_pinecone() -> Pinecone:
+    return Pinecone(api_key=os.environ["PINECONE_API_KEY"])
+
+
+def _ensure_index() -> None:
+    """Create the Pinecone index if it doesn't exist yet. Waits until ready."""
+    pc = _get_pinecone()
+    existing = [i.name for i in pc.list_indexes()]
+    if INDEX_NAME not in existing:
+        print(f"  Creating Pinecone index '{INDEX_NAME}' ...")
+        pc.create_index(
+            name=INDEX_NAME,
+            dimension=DIMENSION,
+            metric=METRIC,
+            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        )
+        while not pc.describe_index(INDEX_NAME).status.ready:
+            time.sleep(1)
+        print(f"  Index '{INDEX_NAME}' is ready.")
+
+
+def get_index():
+    """Return the Pinecone index handle. Raises RuntimeError if the index doesn't exist."""
+    pc = _get_pinecone()
+    existing = [i.name for i in pc.list_indexes()]
+    if INDEX_NAME not in existing:
+        raise RuntimeError(
+            f"Pinecone index '{INDEX_NAME}' not found. Run build_vector_store() first."
+        )
+    return pc.Index(INDEX_NAME)
 
 
 # ─────────────────────────────────────────────
@@ -51,7 +97,7 @@ def chunk_text(text: str, chunk_size: int = 400, overlap: int = 80) -> list[str]
     Split a long text into overlapping chunks.
 
     chunk_size: max characters per chunk
-    overlap:    how many characters the next chunk shares with the previous
+    overlap:    characters shared between consecutive chunks
                 (prevents relevant sentences being cut at a boundary)
     """
     chunks = []
@@ -67,7 +113,7 @@ def chunk_text(text: str, chunk_size: int = 400, overlap: int = 80) -> list[str]
 
 def prepare_chunks(documents: list[dict]) -> tuple[list[str], list[str], list[dict]]:
     """
-    Convert documents into (ids, texts, metadatas) ready for ChromaDB.
+    Convert documents into (ids, texts, metadatas) tuples ready for Pinecone.
     """
     ids, texts, metadatas = [], [], []
     for doc in documents:
@@ -89,84 +135,97 @@ def build_vector_store(
     ids: list[str],
     texts: list[str],
     metadatas: list[dict],
-    chroma_path: str = CHROMA_PATH,
-    collection_name: str = COLLECTION_NAME,
-) -> chromadb.Collection:
+) -> int:
     """
-    Embed all chunks and store them in ChromaDB.
-
-    Uses the all-MiniLM-L6-v2 sentence-transformer model (384-dim vectors).
-    Always deletes and recreates the collection to ensure a clean state.
-    Persists to disk at chroma_path so data survives restarts.
+    Full rebuild: delete ALL vectors then re-embed from scratch.
+    Only called on startup when the index is empty. Returns chunk count.
     """
-    client = chromadb.PersistentClient(path=chroma_path)
-
-    # Delete existing collection to start fresh
+    _ensure_index()
+    index = _get_pinecone().Index(INDEX_NAME)
     try:
-        client.delete_collection(collection_name)
+        index.delete(delete_all=True)
     except Exception:
-        pass
+        pass  # 404 "Namespace not found" is expected on a brand-new empty index
 
-    ef = embedding_functions.DefaultEmbeddingFunction()
-    collection = client.create_collection(
-        name=collection_name,
-        embedding_function=ef,
-        metadata={"hnsw:space": "cosine"},
+    embedder = _get_embedder()
+    vectors = []
+    for chunk_id, text, meta in zip(ids, texts, metadatas):
+        vectors.append({
+            "id": chunk_id,
+            "values": embedder.encode(text).tolist(),
+            "metadata": {**meta, "text": text},  # text stored here for retrieval
+        })
+
+    print(f"\n  Embedding and upserting {len(vectors)} chunks...")
+    for i in range(0, len(vectors), 100):
+        index.upsert(vectors=vectors[i:i + 100])
+    print(f"  Done! '{INDEX_NAME}' updated.")
+    return len(vectors)
+
+
+def upsert_document(filename: str, text: str) -> int:
+    """
+    Add/replace one document's vectors.
+    Deletes only that file's old vectors first — other documents are never touched.
+    Returns the number of new chunks inserted.
+    """
+    _ensure_index()
+    index = _get_pinecone().Index(INDEX_NAME)
+
+    # Remove only this file's existing vectors
+    index.delete(filter={"source": filename})
+
+    doc_id = Path(filename).stem
+    ids, texts, metadatas = prepare_chunks(
+        [{"id": doc_id, "text": text, "source": filename}]
     )
 
-    print(f"\n  Embedding and storing {len(ids)} chunks...")
-    collection.add(ids=ids, documents=texts, metadatas=metadatas)
-    print(f"  Done! '{collection_name}' has {collection.count()} vectors.")
-    return collection
+    embedder = _get_embedder()
+    vectors = []
+    for chunk_id, chunk_str, meta in zip(ids, texts, metadatas):
+        vectors.append({
+            "id": chunk_id,
+            "values": embedder.encode(chunk_str).tolist(),
+            "metadata": {**meta, "text": chunk_str},
+        })
+
+    if vectors:
+        for i in range(0, len(vectors), 100):
+            index.upsert(vectors=vectors[i:i + 100])
+    return len(vectors)
+
+
+def delete_document_vectors(filename: str) -> None:
+    """
+    Delete all vectors belonging to one file. Other files are untouched.
+    """
+    index = _get_pinecone().Index(INDEX_NAME)
+    index.delete(filter={"source": filename})
 
 
 # ─────────────────────────────────────────────
 # RETRIEVE
 # ─────────────────────────────────────────────
 
-def load_collection(
-    chroma_path: str = CHROMA_PATH,
-    collection_name: str = COLLECTION_NAME,
-) -> chromadb.Collection:
-    """
-    Load an existing ChromaDB collection from disk.
-    Raises RuntimeError if the collection doesn't exist yet.
-    """
-    client = chromadb.PersistentClient(path=chroma_path)
-    ef = embedding_functions.DefaultEmbeddingFunction()
-    existing = [c.name for c in client.list_collections()]
-
-    if collection_name not in existing:
-        raise RuntimeError(
-            f"Collection '{collection_name}' not found in '{chroma_path}'. "
-            "Run build_vector_store() first."
-        )
-
-    collection = client.get_collection(name=collection_name, embedding_function=ef)
-    return collection
-
-
-def retrieve(
-    collection: chromadb.Collection,
-    query: str,
-    top_k: int = 3,
-) -> list[dict]:
+def retrieve(index, query: str, top_k: int = 3) -> list[dict]:
     """
     Convert query to a vector and return the top_k most similar chunks.
 
-    Returns a list of dicts: {text, source, similarity}
-    similarity is in range [0, 1] — higher is more relevant.
+    Returns a list of dicts: {text, source, chunk_index, similarity}
+    similarity is the cosine score from Pinecone (higher = more relevant).
     """
-    results = collection.query(
-        query_texts=[query],
-        n_results=top_k,
-        include=["documents", "metadatas", "distances"],
-    )
-    return [
-        {
-            "text": results["documents"][0][i],
-            "source": results["metadatas"][0][i]["source"],
-            "similarity": 1 - results["distances"][0][i],
-        }
-        for i in range(len(results["ids"][0]))
-    ]
+    embedder = _get_embedder()
+    query_vector = embedder.encode(query).tolist()
+
+    results = index.query(vector=query_vector, top_k=top_k, include_metadata=True)
+
+    chunks = []
+    for match in results.matches:
+        meta = match.metadata or {}
+        chunks.append({
+            "text": meta.get("text", ""),
+            "source": meta.get("source", ""),
+            "chunk_index": int(meta.get("chunk_index", 0)),
+            "similarity": round(float(match.score), 4),
+        })
+    return chunks
